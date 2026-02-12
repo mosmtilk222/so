@@ -16,6 +16,7 @@ function App() {
   const [procesoActual, setProcesoActual] = useState(null)
   const [procesosTerminados, setProcesosTerminados] = useState([])
   const stateRef = useRef({ lote, lotesPendientes, procesoActual })
+  const [tiempoGlobal, setTiempoGlobal] = useState(0)
 
   useEffect(() => {
     stateRef.current = { lote, lotesPendientes, procesoActual }
@@ -25,6 +26,7 @@ function App() {
     const id = setInterval(() => {
       const { lote: loteActual, lotesPendientes: pendientes, procesoActual: proc } = stateRef.current
       if (proc) {
+        setTiempoGlobal(prev => prev + 1)
         const tt = proc.tt + 1
         const tr = proc.tme - tt
         if (tt >= proc.tme) {
@@ -121,7 +123,7 @@ function App() {
               <td>{procesoActual?.nombre ?? '—'}</td>
             </tr>
             <tr>
-              <th>Opeación</th>
+              <th>Operación</th>
               <td>{procesoActual?.operacion ?? '—'}</td>
             </tr>
             <tr>
@@ -166,6 +168,7 @@ function App() {
             ))}
           </tbody>
         </table>
+        <h3>Contador global: {tiempoGlobal}s</h3>
       </div>
       </div>
     </div>

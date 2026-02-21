@@ -126,3 +126,22 @@
   width: 1%;
   white-space: nowrap;
 }
+
+h3 {
+  margin: 0.5rem 0;
+}
+
+.section h2 {
+  margin-bottom: 1rem;
+}
+
+.table {
+  max-width: 350px;
+}
+
+body {
+  margin: 0;
+  background-color: #121212;
+  color: white;
+  font-family: Arial, sans-serif;
+}

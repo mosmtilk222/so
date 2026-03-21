@@ -37,7 +37,9 @@ function crearProceso(id) {
     tiempoEnBloqueado: 0,         // contador del ciclo bloqueado actual
     tiempoEnBloqueadoTotal: 0,    // acumulado total en bloqueado
     tiempoEspera: 0,              // acumulado en cola de listos
+    tiempoRespuesta: null,        // tiempo desde llegada hasta 1ª ejecución
     tt: 0,                        // tiempo acumulado en CPU
+    tiempoServicio: 0,            // tiempo total en CPU (para terminados)
   }
 }
 
@@ -58,6 +60,7 @@ const initialState = {
   procesoEjecucion: null,
   colaBloqueados: [],
   procesosTerminados: [],
+  mostrarBCP: false,
 }
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
@@ -67,10 +70,30 @@ function reducer(state, action) {
 
     case 'INIT': {
       const { procesos } = action
+
+      const enMemoria = procesos.slice(0, MAX_MEMORIA)
+
+      const primero = enMemoria[0] ?? null
+      const resto = enMemoria.slice(1)
+
       return {
         ...initialState,
         iniciado: true,
-        colaListos: procesos.slice(0, MAX_MEMORIA),
+
+        procesoEjecucion: primero
+          ? {
+            ...primero,
+            tiempoLlegada: 0,
+            tiempoInicioEjecucion: 0,
+            tiempoRespuesta: 0,
+          }
+          : null,
+
+        colaListos: resto.map(p => ({
+          ...p,
+          tiempoLlegada: 0,
+        })),
+
         colaNew: procesos.slice(MAX_MEMORIA),
       }
     }
@@ -78,7 +101,7 @@ function reducer(state, action) {
     case 'TICK': {
       if (!state.iniciado || state.pausado || state.finalizado) return state
 
-      const t = state.tiempoGlobal + 1
+      const t = state.tiempoGlobal
       let { colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados } = state
 
       // 1. Avanzar proceso en ejecución
@@ -86,20 +109,26 @@ function reducer(state, action) {
         const tt = procesoEjecucion.tt + 1
         if (tt >= procesoEjecucion.tme) {
           // Terminó normalmente
+          const tiempoFinalizacion = t + 1
+          const tiempoRetorno = tiempoFinalizacion - procesoEjecucion.tiempoLlegada
+          const tiempoServicio = procesoEjecucion.tme
+          const tiempoEspera = tiempoRetorno - tiempoServicio
+
           const p = {
             ...procesoEjecucion,
             tt,
-            tiempoFinalizacion: t,
-            tiempoServicio: procesoEjecucion.tme,
+            tiempoFinalizacion,
+            tiempoServicio,
+            tiempoEspera,
             terminadoPorError: false,
             resultado: evaluarOperacion(procesoEjecucion.operacion),
-            tiempoRetorno: t - procesoEjecucion.tiempoLlegada,
+            tiempoRetorno,
             tiempoRespuesta: procesoEjecucion.tiempoInicioEjecucion - procesoEjecucion.tiempoLlegada,
           }
           procesosTerminados = [...procesosTerminados, p]
           procesoEjecucion = null
         } else {
-          procesoEjecucion = { ...procesoEjecucion, tt }
+          procesoEjecucion = { ...procesoEjecucion, tt, tiempoServicio: tt }
         }
       }
 
@@ -113,6 +142,7 @@ function reducer(state, action) {
             ...p,
             tiempoEnBloqueado: 0,
             tiempoEnBloqueadoTotal: p.tiempoEnBloqueadoTotal + bt,
+            tiempoServicio: p.tiempoServicio || p.tt,
           })
         } else {
           stillBlocked.push({ ...p, tiempoEnBloqueado: bt })
@@ -121,15 +151,13 @@ function reducer(state, action) {
       colaBloqueados = stillBlocked
       colaListos = [...colaListos, ...unblocked] // al final de la cola (FCFS)
 
-      // 3. Acumular tiempo de espera en cola de listos
-      colaListos = colaListos.map(p => ({ ...p, tiempoEspera: p.tiempoEspera + 1 }))
 
       // 4. Admitir nuevos procesos si hay espacio en memoria
       // Su hora de llegada es el momento en que entran (cuando se libera un lugar)
       let inMem = colaListos.length + (procesoEjecucion ? 1 : 0) + colaBloqueados.length
       while (inMem < MAX_MEMORIA && colaNew.length > 0) {
         const [first, ...rest] = colaNew
-        colaListos = [...colaListos, { ...first, tiempoLlegada: t }]
+        colaListos = [...colaListos, { ...first, tiempoLlegada: t, tiempoServicio: 0 }]
         colaNew = rest
         inMem++
       }
@@ -137,12 +165,17 @@ function reducer(state, action) {
       // 5. Tomar el siguiente proceso de listos si CPU libre (FCFS)
       if (!procesoEjecucion && colaListos.length > 0) {
         const [first, ...rest] = colaListos
+        const inicio = first.tiempoInicioEjecucion ?? (t + 1)
         procesoEjecucion = {
           ...first,
-          tiempoInicioEjecucion: first.tiempoInicioEjecucion ?? t,
+          tiempoInicioEjecucion: inicio,
+          tiempoRespuesta:
+            first.tiempoRespuesta ??
+            (inicio - first.tiempoLlegada)
         }
         colaListos = rest
       }
+      colaListos = colaListos.map(p => ({ ...p, tiempoEspera: p.tiempoEspera + 1 }))
 
       // 6. Verificar si la simulación terminó
       const totalActivo =
@@ -151,7 +184,7 @@ function reducer(state, action) {
 
       return {
         ...state,
-        tiempoGlobal: t,
+        tiempoGlobal: t + 1,
         colaNew,
         colaListos,
         procesoEjecucion,
@@ -164,9 +197,6 @@ function reducer(state, action) {
     case 'PAUSE':
       return { ...state, pausado: true }
 
-    case 'CONTINUE':
-      return { ...state, pausado: false }
-
     case 'INTERRUPT': {
       if (!state.procesoEjecucion) return state
       return {
@@ -174,7 +204,7 @@ function reducer(state, action) {
         procesoEjecucion: null,
         colaBloqueados: [
           ...state.colaBloqueados,
-          { ...state.procesoEjecucion, tiempoEnBloqueado: 0 },
+          { ...state.procesoEjecucion, tiempoEnBloqueado: 0, tiempoServicio: state.procesoEjecucion.tt },
         ],
       }
     }
@@ -182,13 +212,18 @@ function reducer(state, action) {
     case 'ERROR': {
       if (!state.procesoEjecucion) return state
       const p = state.procesoEjecucion
+      const tiempoFinalizacion = state.tiempoGlobal + 1
+      const tiempoRetorno = tiempoFinalizacion - p.tiempoLlegada
+      const tiempoServicio = p.tt
+      const tiempoEspera = tiempoRetorno - tiempoServicio
       const terminado = {
         ...p,
-        tiempoFinalizacion: state.tiempoGlobal,
-        tiempoServicio: p.tt,
+        tiempoFinalizacion,
+        tiempoServicio,
+        tiempoEspera,
         terminadoPorError: true,
         resultado: 'ERROR',
-        tiempoRetorno: state.tiempoGlobal - p.tiempoLlegada,
+        tiempoRetorno,
         tiempoRespuesta: (p.tiempoInicioEjecucion ?? state.tiempoGlobal) - p.tiempoLlegada,
       }
       return {
@@ -197,6 +232,51 @@ function reducer(state, action) {
         procesosTerminados: [...state.procesosTerminados, terminado],
       }
     }
+
+    case 'NEW_PROCESS': {
+      // No permitir nuevos procesos si la simulación ha finalizado
+      if (state.finalizado) return state
+
+      const nuevo = crearProceso(
+        state.colaNew.length +
+        state.colaListos.length +
+        state.colaBloqueados.length +
+        state.procesosTerminados.length +
+        (state.procesoEjecucion ? 1 : 0) + 1
+      )
+
+      let colaNew = [...state.colaNew]
+      let colaListos = [...state.colaListos]
+
+      let inMem = colaListos.length + (state.procesoEjecucion ? 1 : 0) + state.colaBloqueados.length
+
+      if (inMem < MAX_MEMORIA) {
+        colaListos.push({ ...nuevo, tiempoLlegada: state.tiempoGlobal, tiempoServicio: 0 })
+      } else {
+        colaNew.push(nuevo)
+      }
+
+      return {
+        ...state,
+        colaNew,
+        colaListos
+      }
+    }
+
+    case 'SHOW_BCP':
+      if (state.finalizado) return state
+      return {
+        ...state,
+        pausado: true,
+        mostrarBCP: true,
+      }
+
+    case 'CONTINUE':
+      return {
+        ...state,
+        pausado: false,
+        mostrarBCP: false
+      }
 
     default:
       return state
@@ -210,33 +290,57 @@ export default function App() {
   const {
     iniciado, finalizado, pausado, tiempoGlobal,
     colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados,
+    mostrarBCP
   } = state
 
+  const todosProcesos = [
+    ...colaNew.map(p => ({ ...p, estado: 'NUEVO' })),
+    ...colaListos.map(p => ({ ...p, estado: 'LISTO' })),
+    ...(procesoEjecucion ? [{ ...procesoEjecucion, estado: 'EJECUTANDO' }] : []),
+    ...colaBloqueados.map(p => ({ ...p, estado: 'BLOQUEADO' })),
+    ...procesosTerminados.map(p => ({ ...p, estado: 'TERMINADO' }))
+  ]
+
+  const obtenerEspera = p => {
+    if (p.tiempoRetorno != null && (p.tiempoServicio != null || p.tt != null)) {
+      const servicio = p.tiempoServicio ?? p.tt ?? 0
+      return p.tiempoRetorno - servicio
+    }
+    return p.tiempoEspera ?? 0
+  }
   // Reloj global
   useEffect(() => {
+    if (!iniciado || pausado || finalizado) return
+
     const id = setInterval(() => dispatch({ type: 'TICK' }), 1000)
     return () => clearInterval(id)
-  }, [])
+  }, [iniciado, pausado, finalizado])
 
   // Teclas de control
   useEffect(() => {
     const onKey = e => {
       const key = e.key.toLowerCase()
-      // En pausa solo se permite continuar
+      // En pausa solo se permite continuar y ver BCP
       if (pausado) {
         if (key === 'c') dispatch({ type: 'CONTINUE' })
+        if (key === 'b') dispatch({ type: 'SHOW_BCP' })
         return
       }
+      // Cuando está finalizado, no permitir ninguna tecla de simulación (sólo reiniciar con botón)
+      if (finalizado) return
+
       switch (key) {
         case 'p': dispatch({ type: 'PAUSE' }); break
         case 'c': dispatch({ type: 'CONTINUE' }); break
         case 'i': dispatch({ type: 'INTERRUPT' }); break
         case 'e': dispatch({ type: 'ERROR' }); break
+        case 'n': dispatch({ type: 'NEW_PROCESS' }); break
+        case 'b': dispatch({ type: 'SHOW_BCP' }); break
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [pausado])
+  }, [pausado, finalizado])
 
   function inicializar() {
     const input = prompt('Ingrese el número de procesos a simular:')
@@ -249,13 +353,83 @@ export default function App() {
   const estadoLabel = !iniciado
     ? 'NO INICIADO'
     : finalizado
-    ? 'FINALIZADO'
-    : pausado
-    ? 'PAUSADO'
-    : 'EJECUTANDO'
+      ? 'FINALIZADO'
+      : pausado
+        ? 'PAUSADO'
+        : 'EJECUTANDO'
 
   const estadoClass = estadoLabel.toLowerCase().replace(' ', '-')
 
+  console.log("mostrarBCP:", mostrarBCP)
+
+  if (mostrarBCP) {
+    // Función para obtener la etiqueta de estado con detalles
+    const getEstadoLabel = (p) => {
+      if (p.estado === 'NUEVO') return 'NUEVO'
+      if (p.estado === 'TERMINADO') {
+        return p.terminadoPorError ? 'TERMINADO (ERROR)' : 'TERMINADO (NORMAL)'
+      }
+      if (p.estado === 'BLOQUEADO') {
+        const tiempoTranscurrido = p.tiempoEnBloqueado
+        return `BLOQUEADO (${tiempoTranscurrido}/${TIEMPO_BLOQUEO})`
+      }
+      return p.estado
+    }
+
+    // Función para determinar si mostrar campo o "—"
+    const mostrarDatos = (p) => {
+      return p.estado === 'NUEVO' ? '—' : (p.operacion || '—')
+    }
+
+    const mostrarResultado = (p) => {
+      if (p.estado === 'NUEVO') return '—'
+      return p.resultado ?? '—'
+    }
+
+    return (
+      <div className="bcp-container">
+        <h2>Tabla de Procesos (BCP)</h2>
+
+        <table className="table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Estado</th>
+              <th>Operación</th>
+              <th>Resultado</th>
+              <th>Llegada</th>
+              <th>Finalización</th>
+              <th>Retorno</th>
+              <th>Espera</th>
+              <th>Servicio</th>
+              <th>Restante CPU</th>
+              <th>Respuesta</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {todosProcesos.map(p => (
+              <tr key={p.id}>
+                <td>{p.id}</td>
+                <td>{getEstadoLabel(p)}</td>
+                <td>{mostrarDatos(p)}</td>
+                <td>{mostrarResultado(p)}</td>
+                <td>{p.tiempoLlegada !== undefined && p.estado !== 'NUEVO' ? p.tiempoLlegada : '—'}</td>
+                <td>{p.tiempoFinalizacion ?? '—'}</td>
+                <td>{p.tiempoRetorno ?? '—'}</td>
+                <td>{obtenerEspera(p)}</td>
+                <td>{p.tiempoServicio ?? p.tt ?? '—'}</td>
+                <td>{p.estado === 'TERMINADO' ? '—' : (p.tme - p.tt)}</td>
+                <td>{p.tiempoRespuesta ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <p>Presiona C para continuar</p>
+      </div>
+    )
+  }
   return (
     <div className="app">
 
@@ -285,6 +459,8 @@ export default function App() {
           <kbd>C</kbd><span>Continuar</span>
           <kbd>I</kbd><span>Interrupción E/S</span>
           <kbd>E</kbd><span>Error</span>
+          <kbd>N</kbd><span>Nuevo</span>
+          <kbd>B</kbd><span>BCP</span>
         </div>
       </header>
 
@@ -318,7 +494,7 @@ export default function App() {
                     <td>{p.tiempoFinalizacion}</td>
                     <td>{p.tiempoRetorno}</td>
                     <td>{p.tiempoRespuesta}</td>
-                    <td>{p.tiempoEspera}</td>
+                    <td>{obtenerEspera(p)}</td>
                     <td>{p.tiempoServicio}</td>
                     <td className={p.terminadoPorError ? 'text-error' : 'text-ok'}>
                       {p.terminadoPorError ? 'ERROR' : 'NORMAL'}
@@ -346,7 +522,7 @@ export default function App() {
                 <tr>
                   <th>ID</th>
                   <th>TME</th>
-                  <th>T. Transcurrido</th>
+                  <th>T. Restante</th>
                 </tr>
               </thead>
               <tbody>
@@ -356,7 +532,7 @@ export default function App() {
                     <tr key={p.id}>
                       <td>{p.id}</td>
                       <td>{p.tme}</td>
-                      <td>{p.tt}</td>
+                      <td>{p.tme - p.tt}</td>
                     </tr>
                   ))
                 }
@@ -373,9 +549,10 @@ export default function App() {
                   <tr><th>ID</th><td>{procesoEjecucion.id}</td></tr>
                   <tr><th>Operación</th><td>{procesoEjecucion.operacion}</td></tr>
                   <tr><th>TME</th><td>{procesoEjecucion.tme}</td></tr>
-                  <tr><th>Tiempo Ejecutado</th><td>{procesoEjecucion.tt}</td></tr>
+                  <tr><th>Tiempo Transcurrido</th><td>{procesoEjecucion.tt}</td></tr>
                   <tr><th>Tiempo Restante</th><td>{procesoEjecucion.tme - procesoEjecucion.tt}</td></tr>
                   <tr><th>T. Espera acum.</th><td>{procesoEjecucion.tiempoEspera}</td></tr>
+                  <tr><th>T. Servicio (acum.)</th><td>{procesoEjecucion.tt}</td></tr>
                   <tr><th>T. Llegada</th><td>{procesoEjecucion.tiempoLlegada}</td></tr>
                   <tr><th>1ª Ejecución</th><td>{procesoEjecucion.tiempoInicioEjecucion ?? '—'}</td></tr>
                 </tbody>

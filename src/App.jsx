@@ -98,58 +98,67 @@ function reducer(state, action) {
       }
     }
 
-    case 'TICK': {
-      if (!state.iniciado || state.pausado || state.finalizado) return state
+case 'TICK': {
+  if (!state.iniciado || state.pausado || state.finalizado) return state
 
-      const t = state.tiempoGlobal
-      let { colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados } = state
+  const t = state.tiempoGlobal
+  let { colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados } = state
 
-      // 1. Avanzar proceso en ejecución
-      if (procesoEjecucion) {
-        const tt = procesoEjecucion.tt + 1
-        if (tt >= procesoEjecucion.tme) {
-          // Terminó normalmente
-          const tiempoFinalizacion = t + 1
-          const tiempoRetorno = tiempoFinalizacion - procesoEjecucion.tiempoLlegada
-          const tiempoServicio = procesoEjecucion.tme
-          const tiempoEspera = tiempoRetorno - tiempoServicio
+  // --- 1. Proceso en Ejecución ---
+  if (procesoEjecucion) {
+    const tt = procesoEjecucion.tt + 1
+    if (tt >= procesoEjecucion.tme) {
+      const tiempoFinalizacion = t + 1
+      const tiempoRetorno = tiempoFinalizacion - procesoEjecucion.tiempoLlegada
+      const tiempoServicio = procesoEjecucion.tme
+      const tiempoEspera = tiempoRetorno - tiempoServicio // Aquí la resta ya cuadra
 
-          const p = {
-            ...procesoEjecucion,
-            tt,
-            tiempoFinalizacion,
-            tiempoServicio,
-            tiempoEspera,
-            terminadoPorError: false,
-            resultado: evaluarOperacion(procesoEjecucion.operacion),
-            tiempoRetorno,
-            tiempoRespuesta: procesoEjecucion.tiempoInicioEjecucion - procesoEjecucion.tiempoLlegada,
-          }
-          procesosTerminados = [...procesosTerminados, p]
-          procesoEjecucion = null
-        } else {
-          procesoEjecucion = { ...procesoEjecucion, tt, tiempoServicio: tt }
-        }
+      const p = {
+        ...procesoEjecucion,
+        tt,
+        tiempoFinalizacion,
+        tiempoServicio,
+        tiempoEspera,
+        terminadoPorError: false,
+        resultado: evaluarOperacion(procesoEjecucion.operacion),
+        tiempoRetorno,
+        // Tiempo de respuesta es cuando entró a CPU por primera vez menos cuando llegó
+        tiempoRespuesta: procesoEjecucion.tiempoInicioEjecucion - procesoEjecucion.tiempoLlegada,
       }
+      procesosTerminados = [...procesosTerminados, p]
+      procesoEjecucion = null
+    } else {
+      procesoEjecucion = { ...procesoEjecucion, tt, tiempoServicio: tt }
+    }
+  }
 
-      // 2. Avanzar cola de bloqueados
-      const stillBlocked = []
-      const unblocked = []
-      for (const p of colaBloqueados) {
-        const bt = p.tiempoEnBloqueado + 1
-        if (bt >= TIEMPO_BLOQUEO) {
-          unblocked.push({
-            ...p,
-            tiempoEnBloqueado: 0,
-            tiempoEnBloqueadoTotal: p.tiempoEnBloqueadoTotal + bt,
-            tiempoServicio: p.tiempoServicio || p.tt,
-          })
-        } else {
-          stillBlocked.push({ ...p, tiempoEnBloqueado: bt })
-        }
-      }
-      colaBloqueados = stillBlocked
-      colaListos = [...colaListos, ...unblocked] // al final de la cola (FCFS)
+  // --- 2. Cola de Bloqueados (Aumentar tiempo en bloqueo Y espera) ---
+  const stillBlocked = []
+  const unblocked = []
+  for (const p of colaBloqueados) {
+    const bt = p.tiempoEnBloqueado + 1
+    // IMPORTANTE: El tiempo en bloqueado TAMBIÉN suma al tiempo de espera 
+    // para que la suma final (Servicio + Espera = Retorno) sea correcta.
+    const nuevaEspera = p.tiempoEspera + 1 
+
+    if (bt >= TIEMPO_BLOQUEO) {
+      unblocked.push({
+        ...p,
+        tiempoEnBloqueado: 0,
+        tiempoEspera: nuevaEspera,
+        tiempoServicio: p.tt,
+      })
+    } else {
+      stillBlocked.push({ ...p, tiempoEnBloqueado: bt, tiempoEspera: nuevaEspera })
+    }
+  }
+  colaBloqueados = stillBlocked
+  colaListos = [...colaListos, ...unblocked]
+
+  // --- 3. Cola de Listos (Aumentar espera) ---
+  colaListos = colaListos.map(p => ({ ...p, tiempoEspera: p.tiempoEspera + 1 }))
+
+  // ... (el resto del código de admisión de nuevos y selección de CPU se mantiene igual)
 
 
       // 4. Admitir nuevos procesos si hay espacio en memoria
@@ -301,13 +310,19 @@ export default function App() {
     ...procesosTerminados.map(p => ({ ...p, estado: 'TERMINADO' }))
   ]
 
-  const obtenerEspera = p => {
-    if (p.tiempoRetorno != null && (p.tiempoServicio != null || p.tt != null)) {
-      const servicio = p.tiempoServicio ?? p.tt ?? 0
-      return p.tiempoRetorno - servicio
-    }
-    return p.tiempoEspera ?? 0
+const obtenerEspera = p => {
+  // Si el proceso ya terminó
+  if (p.tiempoFinalizacion != null) {
+    return p.tiempoFinalizacion - p.tiempoLlegada - p.tiempoServicio
   }
+  // Si el proceso es nuevo, no tiene espera aún
+  if (p.estado === 'NUEVO') return 0
+  
+  // Si está en memoria (Listo, Ejecutando o Bloqueado)
+  // Espera = (Tiempo Actual - Tiempo Llegada) - Tiempo que ha estado en CPU
+  const servicioActual = p.tt ?? 0
+  return tiempoGlobal - p.tiempoLlegada - servicioActual
+}
   // Reloj global
   useEffect(() => {
     if (!iniciado || pausado || finalizado) return
@@ -408,22 +423,51 @@ export default function App() {
           </thead>
 
           <tbody>
-            {todosProcesos.map(p => (
-              <tr key={p.id}>
-                <td>{p.id}</td>
-                <td>{getEstadoLabel(p)}</td>
-                <td>{mostrarDatos(p)}</td>
-                <td>{mostrarResultado(p)}</td>
-                <td>{p.tiempoLlegada !== undefined && p.estado !== 'NUEVO' ? p.tiempoLlegada : '—'}</td>
-                <td>{p.tiempoFinalizacion ?? '—'}</td>
-                <td>{p.tiempoRetorno ?? '—'}</td>
-                <td>{obtenerEspera(p)}</td>
-                <td>{p.tiempoServicio ?? p.tt ?? '—'}</td>
-                <td>{p.estado === 'TERMINADO' ? '—' : (p.tme - p.tt)}</td>
-                <td>{p.tiempoRespuesta ?? '—'}</td>
-              </tr>
-            ))}
-          </tbody>
+  {todosProcesos.map(p => {
+    // Calculamos el tiempo de servicio actual (lo que lleva en CPU)
+    const servicioActual = p.tt ?? 0;
+    
+    // Calculamos el tiempo de retorno momentáneo
+    // Si terminó: Finalización - Llegada
+    // Si está en sistema: Tiempo actual - Llegada
+    let retornoMomentaneo = '—';
+    if (p.estado !== 'NUEVO') {
+      retornoMomentaneo = p.estado === 'TERMINADO' 
+        ? p.tiempoRetorno 
+        : tiempoGlobal - p.tiempoLlegada;
+    }
+
+    return (
+      <tr key={p.id}>
+        <td>{p.id}</td>
+        <td>{getEstadoLabel(p)}</td>
+        <td>{mostrarDatos(p)}</td>
+        <td>{mostrarResultado(p)}</td>
+        
+        {/* Llegada: Solo mostrar si ya entró al sistema */}
+        <td>{p.estado !== 'NUEVO' ? p.tiempoLlegada : '—'}</td>
+        
+        {/* Finalización: Solo si ya terminó */}
+        <td>{p.tiempoFinalizacion ?? '—'}</td>
+        
+        {/* Retorno: La suma de Servicio + Espera */}
+        <td>{retornoMomentaneo}</td>
+        
+        {/* Espera: Usando la función corregida */}
+        <td>{p.estado !== 'NUEVO' ? obtenerEspera(p) : '—'}</td>
+        
+        {/* Servicio: Tiempo que ha usado el CPU */}
+        <td>{p.estado !== 'NUEVO' ? servicioActual : '—'}</td>
+        
+        {/* Restante: Cuánto le falta de TME */}
+        <td>{p.estado === 'TERMINADO' ? '—' : (p.tme - servicioActual)}</td>
+        
+        {/* Respuesta: Primer instante en CPU - Llegada */}
+        <td>{p.tiempoRespuesta ?? '—'}</td>
+      </tr>
+    );
+  })}
+</tbody>
         </table>
 
         <p>Presiona C para continuar</p>

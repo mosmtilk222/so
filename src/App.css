@@ -277,3 +277,140 @@ kbd {
 .table-final td {
   text-align: center;
 }
+
+/* ─── Quantum value highlight ──────────────────────────────────────────────── */
+.quantum-val {
+  color: #ce93d8;
+}
+
+/* ─── Quantum progress box (sección ejecución) ─────────────────────────────── */
+.quantum-box {
+  margin-top: 1rem;
+  width: 100%;
+  max-width: 280px;
+  background: #0d0d0d;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+}
+
+.quantum-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: #888;
+  margin-bottom: 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.quantum-counter {
+  color: #ce93d8;
+  font-weight: 700;
+}
+
+.quantum-bar-bg {
+  height: 8px;
+  background: #222;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.quantum-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #7b1fa2, #ce93d8);
+  border-radius: 4px;
+  transition: width 0.35s ease;
+}
+
+/* ─── Blocked progress bar ─────────────────────────────────────────────────── */
+.blocked-timer {
+  font-size: 0.78rem;
+  color: #ffa726;
+  display: block;
+  margin-bottom: 3px;
+}
+
+.blocked-bar-bg {
+  height: 5px;
+  background: #222;
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 80px;
+}
+
+.blocked-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #e65100, #ffa726);
+  border-radius: 3px;
+  transition: width 0.35s ease;
+}
+
+/* ─── Carousel (cola de listos) ─────────────────────────────────────────────── */
+.row-next {
+  background-color: #0d1a0d !important;
+}
+
+.row-next td {
+  color: #a5d6a7 !important;
+}
+
+.carousel-arrow {
+  color: #66bb6a;
+  font-size: 0.7rem;
+  padding-right: 2px !important;
+  width: 18px;
+}
+
+.carousel-label {
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  color: #555;
+  font-style: italic;
+}
+
+/* ─── BCP hint ─────────────────────────────────────────────────────────────── */
+.bcp-hint {
+  margin-top: 1.2rem;
+  color: #777;
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+/* ─── Final subtitle ──────────────────────────────────────────────────────── */
+.final-subtitle {
+  margin-bottom: 1rem;
+  color: #777;
+  font-size: 0.85rem;
+}
+
+/* ─── BCP container ───────────────────────────────────────────────────────── */
+.bcp-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem 1.5rem;
+  overflow-y: auto;
+  background-color: #111;
+}
+
+.bcp-container h2 {
+  margin-bottom: 1.2rem;
+  font-size: 1rem;
+  color: #42a5f5;
+  text-align: center;
+}
+
+.bcp-container .table {
+  max-width: none;
+  width: 100%;
+  font-size: 0.8rem;
+}
+
+.bcp-container .table th,
+.bcp-container .table td {
+  text-align: center;
+  white-space: nowrap;
+  padding: 0.45rem 0.7rem;
+}

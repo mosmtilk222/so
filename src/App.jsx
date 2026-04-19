@@ -19,10 +19,10 @@ function generarOperacion() {
   const num1 = Math.floor(Math.random() * 10) + 1
   let num2 = Math.floor(Math.random() * 10) + 1
   const signo = signos[Math.floor(Math.random() * signos.length)]
-  if (signo === '/') num2 = Math.max(1, num2) // evitar división por cero
+  if (signo === '/') num2 = Math.max(1, num2)
   const op = `${num1} ${signo} ${num2}`
   const res = evaluarOperacion(op)
-  if (res === 'Error') return generarOperacion() // reintento si hay error
+  if (res === 'Error') return generarOperacion()
   return op
 }
 
@@ -34,12 +34,13 @@ function crearProceso(id) {
     tiempoLlegada: 0,
     tiempoInicioEjecucion: null,
     tiempoFinalizacion: null,
-    tiempoEnBloqueado: 0,         // contador del ciclo bloqueado actual
-    tiempoEnBloqueadoTotal: 0,    // acumulado total en bloqueado
-    tiempoEspera: 0,              // acumulado en cola de listos
-    tiempoRespuesta: null,        // tiempo desde llegada hasta 1ª ejecución
-    tt: 0,                        // tiempo acumulado en CPU
-    tiempoServicio: 0,            // tiempo total en CPU (para terminados)
+    tiempoEnBloqueado: 0,
+    tiempoEnBloqueadoTotal: 0,
+    tiempoEspera: 0,
+    tiempoRespuesta: null,
+    tt: 0,                  // tiempo acumulado en CPU
+    tiempoServicio: 0,
+    tiempoEnQuantum: 0,     // tiempo transcurrido en el quantum actual
   }
 }
 
@@ -55,6 +56,7 @@ const initialState = {
   finalizado: false,
   pausado: false,
   tiempoGlobal: 0,
+  quantum: 3,
   colaNew: [],
   colaListos: [],
   procesoEjecucion: null,
@@ -69,126 +71,134 @@ function reducer(state, action) {
   switch (action.type) {
 
     case 'INIT': {
-      const { procesos } = action
-
+      const { procesos, quantum } = action
       const enMemoria = procesos.slice(0, MAX_MEMORIA)
-
       const primero = enMemoria[0] ?? null
       const resto = enMemoria.slice(1)
 
       return {
         ...initialState,
         iniciado: true,
-
+        quantum,
         procesoEjecucion: primero
           ? {
             ...primero,
             tiempoLlegada: 0,
             tiempoInicioEjecucion: 0,
             tiempoRespuesta: 0,
+            tiempoEnQuantum: 0,
           }
           : null,
-
-        colaListos: resto.map(p => ({
-          ...p,
-          tiempoLlegada: 0,
-        })),
-
+        colaListos: resto.map(p => ({ ...p, tiempoLlegada: 0 })),
         colaNew: procesos.slice(MAX_MEMORIA),
       }
     }
 
-case 'TICK': {
-  if (!state.iniciado || state.pausado || state.finalizado) return state
+    case 'TICK': {
+      if (!state.iniciado || state.pausado || state.finalizado) return state
 
-  const t = state.tiempoGlobal
-  let { colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados } = state
+      const t = state.tiempoGlobal
+      const quantum = state.quantum
+      let { colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados } = state
 
-  // --- 1. Proceso en Ejecución ---
-  if (procesoEjecucion) {
-    const tt = procesoEjecucion.tt + 1
-    if (tt >= procesoEjecucion.tme) {
-      const tiempoFinalizacion = t + 1
-      const tiempoRetorno = tiempoFinalizacion - procesoEjecucion.tiempoLlegada
-      const tiempoServicio = procesoEjecucion.tme
-      const tiempoEspera = tiempoRetorno - tiempoServicio // Aquí la resta ya cuadra
+      // --- 1. Proceso en Ejecución (Round-Robin) ---
+      if (procesoEjecucion) {
+        const tt = procesoEjecucion.tt + 1
+        const tiempoEnQuantum = procesoEjecucion.tiempoEnQuantum + 1
 
-      const p = {
-        ...procesoEjecucion,
-        tt,
-        tiempoFinalizacion,
-        tiempoServicio,
-        tiempoEspera,
-        terminadoPorError: false,
-        resultado: evaluarOperacion(procesoEjecucion.operacion),
-        tiempoRetorno,
-        // Tiempo de respuesta es cuando entró a CPU por primera vez menos cuando llegó
-        tiempoRespuesta: procesoEjecucion.tiempoInicioEjecucion - procesoEjecucion.tiempoLlegada,
+        if (tt >= procesoEjecucion.tme) {
+          // Proceso terminó normalmente
+          const tiempoFinalizacion = t + 1
+          const tiempoRetorno = tiempoFinalizacion - procesoEjecucion.tiempoLlegada
+          const tiempoServicio = procesoEjecucion.tme
+          const tiempoEspera = tiempoRetorno - tiempoServicio
+
+          procesosTerminados = [
+            ...procesosTerminados,
+            {
+              ...procesoEjecucion,
+              tt,
+              tiempoFinalizacion,
+              tiempoServicio,
+              tiempoEspera,
+              terminadoPorError: false,
+              resultado: evaluarOperacion(procesoEjecucion.operacion),
+              tiempoRetorno,
+              tiempoRespuesta:
+                (procesoEjecucion.tiempoInicioEjecucion ?? t) - procesoEjecucion.tiempoLlegada,
+            },
+          ]
+          procesoEjecucion = null
+
+        } else if (tiempoEnQuantum >= quantum) {
+          // Quantum agotado → preemptar (Round-Robin)
+          colaListos = [
+            ...colaListos,
+            {
+              ...procesoEjecucion,
+              tt,
+              tiempoServicio: tt,
+              tiempoEnQuantum: 0,
+            },
+          ]
+          procesoEjecucion = null
+
+        } else {
+          procesoEjecucion = {
+            ...procesoEjecucion,
+            tt,
+            tiempoEnQuantum,
+            tiempoServicio: tt,
+          }
+        }
       }
-      procesosTerminados = [...procesosTerminados, p]
-      procesoEjecucion = null
-    } else {
-      procesoEjecucion = { ...procesoEjecucion, tt, tiempoServicio: tt }
-    }
-  }
 
-  // --- 2. Cola de Bloqueados (Aumentar tiempo en bloqueo Y espera) ---
-  const stillBlocked = []
-  const unblocked = []
-  for (const p of colaBloqueados) {
-    const bt = p.tiempoEnBloqueado + 1
-    // IMPORTANTE: El tiempo en bloqueado TAMBIÉN suma al tiempo de espera 
-    // para que la suma final (Servicio + Espera = Retorno) sea correcta.
-    const nuevaEspera = p.tiempoEspera + 1 
+      // --- 2. Cola de Bloqueados ---
+      const stillBlocked = []
+      const unblocked = []
+      for (const p of colaBloqueados) {
+        const bt = p.tiempoEnBloqueado + 1
+        if (bt >= TIEMPO_BLOQUEO) {
+          unblocked.push({ ...p, tiempoEnBloqueado: 0, tiempoServicio: p.tt })
+        } else {
+          stillBlocked.push({ ...p, tiempoEnBloqueado: bt })
+        }
+      }
+      colaBloqueados = stillBlocked
+      colaListos = [...colaListos, ...unblocked]
 
-    if (bt >= TIEMPO_BLOQUEO) {
-      unblocked.push({
-        ...p,
-        tiempoEnBloqueado: 0,
-        tiempoEspera: nuevaEspera,
-        tiempoServicio: p.tt,
-      })
-    } else {
-      stillBlocked.push({ ...p, tiempoEnBloqueado: bt, tiempoEspera: nuevaEspera })
-    }
-  }
-  colaBloqueados = stillBlocked
-  colaListos = [...colaListos, ...unblocked]
+      // --- 3. Cola de Listos: incrementar espera ---
+      colaListos = colaListos.map(p => ({ ...p, tiempoEspera: p.tiempoEspera + 1 }))
 
-  // --- 3. Cola de Listos (Aumentar espera) ---
-  colaListos = colaListos.map(p => ({ ...p, tiempoEspera: p.tiempoEspera + 1 }))
-
-  // ... (el resto del código de admisión de nuevos y selección de CPU se mantiene igual)
-
-
-      // 4. Admitir nuevos procesos si hay espacio en memoria
-      // Su hora de llegada es el momento en que entran (cuando se libera un lugar)
+      // --- 4. Admitir nuevos procesos si hay espacio en memoria ---
       let inMem = colaListos.length + (procesoEjecucion ? 1 : 0) + colaBloqueados.length
       while (inMem < MAX_MEMORIA && colaNew.length > 0) {
         const [first, ...rest] = colaNew
-        colaListos = [...colaListos, { ...first, tiempoLlegada: t, tiempoServicio: 0 }]
+        colaListos = [...colaListos, { ...first, tiempoLlegada: t + 1, tiempoServicio: 0 }]
         colaNew = rest
         inMem++
       }
 
-      // 5. Tomar el siguiente proceso de listos si CPU libre (FCFS)
+      // --- 5. Despachar siguiente proceso si CPU libre (Round-Robin: FIFO de la cola) ---
       if (!procesoEjecucion && colaListos.length > 0) {
         const [first, ...rest] = colaListos
         const inicio = first.tiempoInicioEjecucion ?? (t + 1)
         procesoEjecucion = {
           ...first,
+          tiempoEnQuantum: 0,
           tiempoInicioEjecucion: inicio,
           tiempoRespuesta:
-            first.tiempoRespuesta ??
-            (inicio - first.tiempoLlegada)
+            first.tiempoRespuesta ?? (inicio - first.tiempoLlegada),
         }
         colaListos = rest
       }
-      colaListos = colaListos.map(p => ({ ...p, tiempoEspera: p.tiempoEspera + 1 }))
 
-      // 6. Verificar si la simulación terminó
+      // --- 6. Verificar fin de simulación ---
       const totalActivo =
-        colaNew.length + colaListos.length + (procesoEjecucion ? 1 : 0) + colaBloqueados.length
+        colaNew.length +
+        colaListos.length +
+        (procesoEjecucion ? 1 : 0) +
+        colaBloqueados.length
       const finalizado = totalActivo === 0
 
       return {
@@ -213,7 +223,11 @@ case 'TICK': {
         procesoEjecucion: null,
         colaBloqueados: [
           ...state.colaBloqueados,
-          { ...state.procesoEjecucion, tiempoEnBloqueado: 0, tiempoServicio: state.procesoEjecucion.tt },
+          {
+            ...state.procesoEjecucion,
+            tiempoEnBloqueado: 0,
+            tiempoServicio: state.procesoEjecucion.tt,
+          },
         ],
       }
     }
@@ -225,27 +239,27 @@ case 'TICK': {
       const tiempoRetorno = tiempoFinalizacion - p.tiempoLlegada
       const tiempoServicio = p.tt
       const tiempoEspera = tiempoRetorno - tiempoServicio
-      const terminado = {
-        ...p,
-        tiempoFinalizacion,
-        tiempoServicio,
-        tiempoEspera,
-        terminadoPorError: true,
-        resultado: 'ERROR',
-        tiempoRetorno,
-        tiempoRespuesta: (p.tiempoInicioEjecucion ?? state.tiempoGlobal) - p.tiempoLlegada,
-      }
       return {
         ...state,
         procesoEjecucion: null,
-        procesosTerminados: [...state.procesosTerminados, terminado],
+        procesosTerminados: [
+          ...state.procesosTerminados,
+          {
+            ...p,
+            tiempoFinalizacion,
+            tiempoServicio,
+            tiempoEspera,
+            terminadoPorError: true,
+            resultado: 'ERROR',
+            tiempoRetorno,
+            tiempoRespuesta: (p.tiempoInicioEjecucion ?? state.tiempoGlobal) - p.tiempoLlegada,
+          },
+        ],
       }
     }
 
     case 'NEW_PROCESS': {
-      // No permitir nuevos procesos si la simulación ha finalizado
       if (state.finalizado) return state
-
       const nuevo = crearProceso(
         state.colaNew.length +
         state.colaListos.length +
@@ -253,39 +267,24 @@ case 'TICK': {
         state.procesosTerminados.length +
         (state.procesoEjecucion ? 1 : 0) + 1
       )
-
       let colaNew = [...state.colaNew]
       let colaListos = [...state.colaListos]
-
-      let inMem = colaListos.length + (state.procesoEjecucion ? 1 : 0) + state.colaBloqueados.length
-
+      const inMem =
+        colaListos.length + (state.procesoEjecucion ? 1 : 0) + state.colaBloqueados.length
       if (inMem < MAX_MEMORIA) {
         colaListos.push({ ...nuevo, tiempoLlegada: state.tiempoGlobal, tiempoServicio: 0 })
       } else {
         colaNew.push(nuevo)
       }
-
-      return {
-        ...state,
-        colaNew,
-        colaListos
-      }
+      return { ...state, colaNew, colaListos }
     }
 
     case 'SHOW_BCP':
       if (state.finalizado) return state
-      return {
-        ...state,
-        pausado: true,
-        mostrarBCP: true,
-      }
+      return { ...state, pausado: true, mostrarBCP: true }
 
     case 'CONTINUE':
-      return {
-        ...state,
-        pausado: false,
-        mostrarBCP: false
-      }
+      return { ...state, pausado: false, mostrarBCP: false }
 
     default:
       return state
@@ -297,9 +296,9 @@ case 'TICK': {
 export default function App() {
   const [state, dispatch] = useReducer(reducer, initialState)
   const {
-    iniciado, finalizado, pausado, tiempoGlobal,
+    iniciado, finalizado, pausado, tiempoGlobal, quantum,
     colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados,
-    mostrarBCP
+    mostrarBCP,
   } = state
 
   const todosProcesos = [
@@ -307,26 +306,20 @@ export default function App() {
     ...colaListos.map(p => ({ ...p, estado: 'LISTO' })),
     ...(procesoEjecucion ? [{ ...procesoEjecucion, estado: 'EJECUTANDO' }] : []),
     ...colaBloqueados.map(p => ({ ...p, estado: 'BLOQUEADO' })),
-    ...procesosTerminados.map(p => ({ ...p, estado: 'TERMINADO' }))
+    ...procesosTerminados.map(p => ({ ...p, estado: 'TERMINADO' })),
   ]
 
-const obtenerEspera = p => {
-  // Si el proceso ya terminó
-  if (p.tiempoFinalizacion != null) {
-    return p.tiempoFinalizacion - p.tiempoLlegada - p.tiempoServicio
+  const obtenerEspera = p => {
+    if (p.tiempoFinalizacion != null) {
+      return p.tiempoFinalizacion - p.tiempoLlegada - p.tiempoServicio
+    }
+    if (p.estado === 'NUEVO') return 0
+    return tiempoGlobal - p.tiempoLlegada - (p.tt ?? 0)
   }
-  // Si el proceso es nuevo, no tiene espera aún
-  if (p.estado === 'NUEVO') return 0
-  
-  // Si está en memoria (Listo, Ejecutando o Bloqueado)
-  // Espera = (Tiempo Actual - Tiempo Llegada) - Tiempo que ha estado en CPU
-  const servicioActual = p.tt ?? 0
-  return tiempoGlobal - p.tiempoLlegada - servicioActual
-}
+
   // Reloj global
   useEffect(() => {
     if (!iniciado || pausado || finalizado) return
-
     const id = setInterval(() => dispatch({ type: 'TICK' }), 1000)
     return () => clearInterval(id)
   }, [iniciado, pausado, finalizado])
@@ -335,15 +328,12 @@ const obtenerEspera = p => {
   useEffect(() => {
     const onKey = e => {
       const key = e.key.toLowerCase()
-      // En pausa solo se permite continuar y ver BCP
       if (pausado) {
         if (key === 'c') dispatch({ type: 'CONTINUE' })
         if (key === 'b') dispatch({ type: 'SHOW_BCP' })
         return
       }
-      // Cuando está finalizado, no permitir ninguna tecla de simulación (sólo reiniciar con botón)
       if (finalizado) return
-
       switch (key) {
         case 'p': dispatch({ type: 'PAUSE' }); break
         case 'c': dispatch({ type: 'CONTINUE' }); break
@@ -358,11 +348,16 @@ const obtenerEspera = p => {
   }, [pausado, finalizado])
 
   function inicializar() {
-    const input = prompt('Ingrese el número de procesos a simular:')
-    const n = parseInt(input)
+    const inputN = prompt('Ingrese el número de procesos inicial:')
+    const n = parseInt(inputN)
     if (!n || n <= 0 || isNaN(n)) return
+
+    const inputQ = prompt('Ingrese el valor del Quantum:')
+    const q = parseInt(inputQ)
+    if (!q || q <= 0 || isNaN(q)) return
+
     const procesos = Array.from({ length: n }, (_, i) => crearProceso(i + 1))
-    dispatch({ type: 'INIT', procesos })
+    dispatch({ type: 'INIT', procesos, quantum: q })
   }
 
   const estadoLabel = !iniciado
@@ -375,36 +370,20 @@ const obtenerEspera = p => {
 
   const estadoClass = estadoLabel.toLowerCase().replace(' ', '-')
 
-  console.log("mostrarBCP:", mostrarBCP)
-
+  // ── Vista BCP ──────────────────────────────────────────────────────────────
   if (mostrarBCP) {
-    // Función para obtener la etiqueta de estado con detalles
-    const getEstadoLabel = (p) => {
+    const getEstadoLabel = p => {
       if (p.estado === 'NUEVO') return 'NUEVO'
-      if (p.estado === 'TERMINADO') {
+      if (p.estado === 'TERMINADO')
         return p.terminadoPorError ? 'TERMINADO (ERROR)' : 'TERMINADO (NORMAL)'
-      }
-      if (p.estado === 'BLOQUEADO') {
-        const tiempoTranscurrido = p.tiempoEnBloqueado
-        return `BLOQUEADO (${tiempoTranscurrido}/${TIEMPO_BLOQUEO})`
-      }
+      if (p.estado === 'BLOQUEADO')
+        return `BLOQUEADO (${p.tiempoEnBloqueado}/${TIEMPO_BLOQUEO})`
       return p.estado
-    }
-
-    // Función para determinar si mostrar campo o "—"
-    const mostrarDatos = (p) => {
-      return p.estado === 'NUEVO' ? '—' : (p.operacion || '—')
-    }
-
-    const mostrarResultado = (p) => {
-      if (p.estado === 'NUEVO') return '—'
-      return p.resultado ?? '—'
     }
 
     return (
       <div className="bcp-container">
-        <h2>Tabla de Procesos (BCP)</h2>
-
+        <h2>Tabla de Procesos (BCP) — Reloj: {tiempoGlobal}s | Quantum: {quantum}</h2>
         <table className="table">
           <thead>
             <tr>
@@ -416,64 +395,42 @@ const obtenerEspera = p => {
               <th>Finalización</th>
               <th>Retorno</th>
               <th>Espera</th>
-              <th>Servicio</th>
-              <th>Restante CPU</th>
+              <th>Servicio (CPU)</th>
+              <th>Restante</th>
               <th>Respuesta</th>
             </tr>
           </thead>
-
           <tbody>
-  {todosProcesos.map(p => {
-    // Calculamos el tiempo de servicio actual (lo que lleva en CPU)
-    const servicioActual = p.tt ?? 0;
-    
-    // Calculamos el tiempo de retorno momentáneo
-    // Si terminó: Finalización - Llegada
-    // Si está en sistema: Tiempo actual - Llegada
-    let retornoMomentaneo = '—';
-    if (p.estado !== 'NUEVO') {
-      retornoMomentaneo = p.estado === 'TERMINADO' 
-        ? p.tiempoRetorno 
-        : tiempoGlobal - p.tiempoLlegada;
-    }
-
-    return (
-      <tr key={p.id}>
-        <td>{p.id}</td>
-        <td>{getEstadoLabel(p)}</td>
-        <td>{mostrarDatos(p)}</td>
-        <td>{mostrarResultado(p)}</td>
-        
-        {/* Llegada: Solo mostrar si ya entró al sistema */}
-        <td>{p.estado !== 'NUEVO' ? p.tiempoLlegada : '—'}</td>
-        
-        {/* Finalización: Solo si ya terminó */}
-        <td>{p.tiempoFinalizacion ?? '—'}</td>
-        
-        {/* Retorno: La suma de Servicio + Espera */}
-        <td>{retornoMomentaneo}</td>
-        
-        {/* Espera: Usando la función corregida */}
-        <td>{p.estado !== 'NUEVO' ? obtenerEspera(p) : '—'}</td>
-        
-        {/* Servicio: Tiempo que ha usado el CPU */}
-        <td>{p.estado !== 'NUEVO' ? servicioActual : '—'}</td>
-        
-        {/* Restante: Cuánto le falta de TME */}
-        <td>{p.estado === 'TERMINADO' ? '—' : (p.tme - servicioActual)}</td>
-        
-        {/* Respuesta: Primer instante en CPU - Llegada */}
-        <td>{p.tiempoRespuesta ?? '—'}</td>
-      </tr>
-    );
-  })}
-</tbody>
+            {todosProcesos.map(p => {
+              const servicioActual = p.tt ?? 0
+              const retorno = p.estado === 'TERMINADO'
+                ? p.tiempoRetorno
+                : p.estado !== 'NUEVO'
+                  ? tiempoGlobal - p.tiempoLlegada
+                  : '—'
+              return (
+                <tr key={p.id}>
+                  <td>{p.id}</td>
+                  <td>{getEstadoLabel(p)}</td>
+                  <td>{p.estado !== 'NUEVO' ? p.operacion : '—'}</td>
+                  <td>{p.estado === 'TERMINADO' ? p.resultado : '—'}</td>
+                  <td>{p.estado !== 'NUEVO' ? p.tiempoLlegada : '—'}</td>
+                  <td>{p.tiempoFinalizacion ?? '—'}</td>
+                  <td>{retorno}</td>
+                  <td>{p.estado !== 'NUEVO' ? obtenerEspera(p) : '—'}</td>
+                  <td>{p.estado !== 'NUEVO' ? servicioActual : '—'}</td>
+                  <td>{p.estado === 'TERMINADO' ? '—' : (p.tme - servicioActual)}</td>
+                  <td>{p.tiempoRespuesta ?? '—'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
         </table>
-
-        <p>Presiona C para continuar</p>
+        <p className="bcp-hint">Presiona C para continuar</p>
       </div>
     )
   }
+
   return (
     <div className="app">
 
@@ -483,6 +440,10 @@ const obtenerEspera = p => {
           <div className="header-item">
             <span className="label">Procesos Nuevos</span>
             <span className="value">{colaNew.length}</span>
+          </div>
+          <div className="header-item">
+            <span className="label">Quantum</span>
+            <span className="value quantum-val">{quantum}</span>
           </div>
           <div className="header-item">
             <span className="label">Estado</span>
@@ -511,12 +472,13 @@ const obtenerEspera = p => {
       {/* ── Vista final ── */}
       {finalizado ? (
         <div className="final-container">
-          <h2 className="final-title">Simulación Finalizada — Resumen de Procesos</h2>
+          <h2 className="final-title">Simulación Finalizada — Tabla de Procesos</h2>
+          <p className="final-subtitle">Quantum: {quantum} | Tiempo total: {tiempoGlobal}s</p>
           <div className="table-scroll">
             <table className="table table-final">
               <thead>
                 <tr>
-                  <th>N°</th>
+                  <th>ID</th>
                   <th>Operación</th>
                   <th>Resultado</th>
                   <th>T. Llegada</th>
@@ -560,47 +522,75 @@ const obtenerEspera = p => {
 
           {/* Cola de Listos */}
           <div className="section">
-            <h2>Cola de Listos</h2>
+            <h2>Cola de Listos (Round-Robin)</h2>
             <table className="table">
               <thead>
                 <tr>
+                  <th></th>
                   <th>ID</th>
                   <th>TME</th>
+                  <th>T. Transcurrido</th>
                   <th>T. Restante</th>
                 </tr>
               </thead>
               <tbody>
                 {colaListos.length === 0
-                  ? <tr><td colSpan={3} className="empty-cell">vacía</td></tr>
-                  : colaListos.map(p => (
-                    <tr key={p.id}>
+                  ? <tr><td colSpan={5} className="empty-cell">vacía</td></tr>
+                  : colaListos.map((p, idx) => (
+                    <tr key={p.id} className={idx === 0 ? 'row-next' : ''}>
+                      <td className="carousel-arrow">{idx === 0 ? '▶' : ''}</td>
                       <td>{p.id}</td>
                       <td>{p.tme}</td>
+                      <td>{p.tt}</td>
                       <td>{p.tme - p.tt}</td>
                     </tr>
                   ))
                 }
               </tbody>
             </table>
+            {colaListos.length > 0 && (
+              <p className="carousel-label">▶ próximo en ejecutar</p>
+            )}
           </div>
 
           {/* Proceso en Ejecución */}
           <div className="section section-exec">
             <h2>Proceso en Ejecución</h2>
             {procesoEjecucion ? (
-              <table className="table table-vertical">
-                <tbody>
-                  <tr><th>ID</th><td>{procesoEjecucion.id}</td></tr>
-                  <tr><th>Operación</th><td>{procesoEjecucion.operacion}</td></tr>
-                  <tr><th>TME</th><td>{procesoEjecucion.tme}</td></tr>
-                  <tr><th>Tiempo Transcurrido</th><td>{procesoEjecucion.tt}</td></tr>
-                  <tr><th>Tiempo Restante</th><td>{procesoEjecucion.tme - procesoEjecucion.tt}</td></tr>
-                  <tr><th>T. Espera acum.</th><td>{procesoEjecucion.tiempoEspera}</td></tr>
-                  <tr><th>T. Servicio (acum.)</th><td>{procesoEjecucion.tt}</td></tr>
-                  <tr><th>T. Llegada</th><td>{procesoEjecucion.tiempoLlegada}</td></tr>
-                  <tr><th>1ª Ejecución</th><td>{procesoEjecucion.tiempoInicioEjecucion ?? '—'}</td></tr>
-                </tbody>
-              </table>
+              <>
+                <table className="table table-vertical">
+                  <tbody>
+                    <tr><th>ID</th><td>{procesoEjecucion.id}</td></tr>
+                    <tr><th>Operación</th><td>{procesoEjecucion.operacion}</td></tr>
+                    <tr><th>TME</th><td>{procesoEjecucion.tme}</td></tr>
+                    <tr><th>T. Transcurrido (CPU)</th><td>{procesoEjecucion.tt}</td></tr>
+                    <tr><th>T. Restante</th><td>{procesoEjecucion.tme - procesoEjecucion.tt}</td></tr>
+                    <tr><th>T. Espera acum.</th><td>{procesoEjecucion.tiempoEspera}</td></tr>
+                    <tr><th>T. Llegada</th><td>{procesoEjecucion.tiempoLlegada}</td></tr>
+                    <tr><th>1ª Ejecución</th><td>{procesoEjecucion.tiempoInicioEjecucion ?? '—'}</td></tr>
+                  </tbody>
+                </table>
+                {/* Barra de Quantum */}
+                <div className="quantum-box">
+                  <div className="quantum-header">
+                    <span>Quantum</span>
+                    <span className="quantum-counter">
+                      {procesoEjecucion.tiempoEnQuantum} / {quantum}
+                    </span>
+                  </div>
+                  <div className="quantum-bar-bg">
+                    <div
+                      className="quantum-bar-fill"
+                      style={{
+                        width: `${Math.min(
+                          (procesoEjecucion.tiempoEnQuantum / quantum) * 100,
+                          100
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              </>
             ) : (
               <p className="empty-label">— CPU libre —</p>
             )}
@@ -622,7 +612,17 @@ const obtenerEspera = p => {
                   : colaBloqueados.map(p => (
                     <tr key={p.id}>
                       <td>{p.id}</td>
-                      <td>{p.tiempoEnBloqueado} / {TIEMPO_BLOQUEO}</td>
+                      <td>
+                        <span className="blocked-timer">
+                          {p.tiempoEnBloqueado} / {TIEMPO_BLOQUEO}
+                        </span>
+                        <div className="blocked-bar-bg">
+                          <div
+                            className="blocked-bar-fill"
+                            style={{ width: `${(p.tiempoEnBloqueado / TIEMPO_BLOQUEO) * 100}%` }}
+                          />
+                        </div>
+                      </td>
                     </tr>
                   ))
                 }

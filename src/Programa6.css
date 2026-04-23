@@ -1,0 +1,143 @@
+.p6-container {
+  padding: 20px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: #181818;
+  color: #efefef;
+  min-height: 100vh;
+}
+
+.p6-container h2,
+.p6-container h3 {
+  margin: 0 0 10px;
+}
+
+.finalizado {
+  color: #ff6b6b;
+  margin-top: 4px;
+}
+
+.status-line {
+  color: #c9c9c9;
+  margin: 8px 0 14px;
+}
+
+.buffer-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.box {
+  border: 2px solid #454545;
+  background: #262626;
+  border-radius: 8px;
+  text-align: center;
+  padding: 12px;
+  position: relative;
+  min-height: 72px;
+}
+
+.box.has-item {
+  border-color: #2ea44f;
+  background: #1c3021;
+}
+
+.box.p-here {
+  box-shadow: 0 0 0 2px #4aa3ff inset;
+}
+
+.box.c-here {
+  outline: 1px solid #ff7a7a;
+}
+
+.num {
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  font-size: 0.74rem;
+  color: #9c9c9c;
+}
+
+.slot-value {
+  font-size: 1.45rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 8px;
+}
+
+.slot-tags {
+  margin-top: 4px;
+  font-size: 0.7rem;
+  color: #bbb;
+}
+
+.status-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.card {
+  background: #2b2b2b;
+  border-left: 5px solid #666;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.card p {
+  margin: 8px 0 0;
+}
+
+.productor-card {
+  border-left-color: #4aa3ff;
+}
+
+.consumidor-card {
+  border-left-color: #ff7a7a;
+}
+
+.badge {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.badge.dormido {
+  background: #5b5b5b;
+  color: #fff;
+}
+
+.badge.intentando {
+  background: #ffac33;
+  color: #1f1f1f;
+}
+
+.badge.trabajando {
+  background: #2ea44f;
+  color: #fff;
+}
+
+.log-area {
+  margin-top: 18px;
+  background: #101010;
+  border: 1px solid #2f2f2f;
+  border-radius: 8px;
+  height: 190px;
+  overflow-y: auto;
+  padding: 10px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 0.85rem;
+  color: #89f57a;
+}
+
+.footer-note {
+  margin-top: 14px;
+  color: #9a9a9a;
+  font-size: 0.85rem;
+}

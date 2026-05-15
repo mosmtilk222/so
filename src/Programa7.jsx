@@ -103,6 +103,39 @@ function liberarMarcos(marcos, pid) {
   return marcos.map(m => (m && m !== 'SO' && m.pid === pid ? null : m))
 }
 
+function siguienteId(state) {
+  const ids = [
+    ...state.colaNew.map(p => p.id),
+    ...state.colaListos.map(p => p.id),
+    ...state.colaBloqueados.map(p => p.id),
+    ...state.colaSuspendidos.map(p => p.id),
+    ...state.procesosTerminados.map(p => p.id),
+    ...(state.procesoEjecucion ? [state.procesoEjecucion.id] : []),
+  ]
+  return ids.length ? Math.max(...ids) + 1 : 1
+}
+
+/** Evita doble descarga en desarrollo (StrictMode ejecuta efectos/reducer dos veces). */
+let ultimaFirmaExportSuspendidos = null
+
+function exportarSuspendidosJson(colaSuspendidos) {
+  const firma = JSON.stringify(
+    colaSuspendidos.map(p => ({ id: p.id, suspendidoEn: p.suspendidoEn }))
+  )
+  if (firma === ultimaFirmaExportSuspendidos) return
+  ultimaFirmaExportSuspendidos = firma
+
+  const blob = new Blob([JSON.stringify(colaSuspendidos, null, 2)], {
+    type: 'application/json;charset=utf-8',
+  })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `procesos_suspendidos_${Date.now()}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 // ─── Estado inicial ───────────────────────────────────────────────────────────
 
 const initialState = {
@@ -115,10 +148,12 @@ const initialState = {
   colaListos: [],
   procesoEjecucion: null,
   colaBloqueados: [],
+  colaSuspendidos: [],
   procesosTerminados: [],
   marcos: inicializarMarcos(),
   mostrarBCP: false,
   mostrarTablaPaginas: false,
+  pendienteExportSuspendidos: false,
 }
 
 // Admite tantos procesos de colaNew a colaListos como quepan en memoria.
@@ -187,21 +222,59 @@ function reducer(state, action) {
     case 'TICK': {
       if (!state.iniciado || state.pausado || state.finalizado) return state
 
+      const soloSuspendidos =
+        state.colaNew.length === 0 &&
+        state.colaListos.length === 0 &&
+        !state.procesoEjecucion &&
+        state.colaBloqueados.length === 0 &&
+        state.colaSuspendidos.length > 0
+
+      if (soloSuspendidos) return state
+
       const t = state.tiempoGlobal
       const quantum = state.quantum
       let { colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados, marcos } = state
 
-      // 1) Proceso en ejecución
+      // 1) Cola de bloqueados (8 unidades de tiempo E/S)
+      const aunBloqueados = []
+      const desbloqueados = []
+      for (const p of colaBloqueados) {
+        const bt = p.tiempoEnBloqueado + 1
+        if (bt >= TIEMPO_BLOQUEO) {
+          desbloqueados.push({ ...p, tiempoEnBloqueado: 0 })
+        } else {
+          aunBloqueados.push({ ...p, tiempoEnBloqueado: bt })
+        }
+      }
+      colaBloqueados = aunBloqueados
+      colaListos = [...colaListos, ...desbloqueados]
+
+      // 2) Despacho inicial (quien sale de listos no suma espera este tick)
+      if (!procesoEjecucion && colaListos.length > 0) {
+        const [first, ...rest] = colaListos
+        const inicio = t + 1
+        procesoEjecucion = {
+          ...first,
+          tiempoEnQuantum: 0,
+          tiempoInicioEjecucion: first.tiempoInicioEjecucion ?? inicio,
+          tiempoRespuesta: first.tiempoRespuesta ?? (inicio - first.tiempoLlegada),
+        }
+        colaListos = rest
+      }
+
+      // 3) Tiempo de espera solo en cola de listos
+      colaListos = colaListos.map(p => ({ ...p, tiempoEspera: p.tiempoEspera + 1 }))
+
+      // 4) CPU — un segundo de ejecución
       if (procesoEjecucion) {
         const tt = procesoEjecucion.tt + 1
         const tiempoEnQuantum = procesoEjecucion.tiempoEnQuantum + 1
 
         if (tt >= procesoEjecucion.tme) {
-          // Terminó normalmente → libera memoria
           marcos = liberarMarcos(marcos, procesoEjecucion.id)
           const tiempoFinalizacion = t + 1
-          const tiempoRetorno = tiempoFinalizacion - procesoEjecucion.tiempoLlegada
           const tiempoServicio = procesoEjecucion.tme
+          const tiempoRetorno = tiempoFinalizacion - procesoEjecucion.tiempoLlegada
           const tiempoEspera = tiempoRetorno - tiempoServicio
           procesosTerminados = [
             ...procesosTerminados,
@@ -215,61 +288,47 @@ function reducer(state, action) {
               terminadoPorError: false,
               resultado: evaluarOperacion(procesoEjecucion.operacion),
               tiempoRespuesta:
-                (procesoEjecucion.tiempoInicioEjecucion ?? t) - procesoEjecucion.tiempoLlegada,
+                procesoEjecucion.tiempoInicioEjecucion - procesoEjecucion.tiempoLlegada,
             },
           ]
           procesoEjecucion = null
         } else if (tiempoEnQuantum >= quantum) {
-          // Quantum agotado → al final de listos
           colaListos = [
             ...colaListos,
-            { ...procesoEjecucion, tt, tiempoServicio: tt, tiempoEnQuantum: 0 },
+            { ...procesoEjecucion, tt, tiempoEnQuantum: 0 },
           ]
           procesoEjecucion = null
         } else {
-          procesoEjecucion = { ...procesoEjecucion, tt, tiempoEnQuantum, tiempoServicio: tt }
+          procesoEjecucion = { ...procesoEjecucion, tt, tiempoEnQuantum }
         }
       }
 
-      // 2) Cola de bloqueados
-      const aunBloqueados = []
-      const desbloqueados = []
-      for (const p of colaBloqueados) {
-        const bt = p.tiempoEnBloqueado + 1
-        if (bt >= TIEMPO_BLOQUEO) {
-          desbloqueados.push({ ...p, tiempoEnBloqueado: 0, tiempoServicio: p.tt })
-        } else {
-          aunBloqueados.push({ ...p, tiempoEnBloqueado: bt })
-        }
-      }
-      colaBloqueados = aunBloqueados
-      colaListos = [...colaListos, ...desbloqueados]
-
-      // 3) Espera en cola de listos
-      colaListos = colaListos.map(p => ({ ...p, tiempoEspera: p.tiempoEspera + 1 }))
-
-      // 4) Planificador a largo plazo: admitir desde Nuevos si hay marcos libres
+      // 5) Planificador a largo plazo
       const admitido = admitirNuevos(colaNew, colaListos, marcos, t + 1)
       colaNew = admitido.colaNew
       colaListos = admitido.colaListos
       marcos = admitido.marcos
 
-      // 5) Despachar siguiente proceso (FIFO)
+      // 6) Despacho si la CPU quedó libre
       if (!procesoEjecucion && colaListos.length > 0) {
         const [first, ...rest] = colaListos
-        const inicio = first.tiempoInicioEjecucion ?? (t + 1)
+        const inicio = t + 1
         procesoEjecucion = {
           ...first,
           tiempoEnQuantum: 0,
-          tiempoInicioEjecucion: inicio,
+          tiempoInicioEjecucion: first.tiempoInicioEjecucion ?? inicio,
           tiempoRespuesta: first.tiempoRespuesta ?? (inicio - first.tiempoLlegada),
         }
         colaListos = rest
       }
 
-      // 6) Finalización
+      // 7) Fin: no terminar si quedan suspendidos (actividad 8)
       const totalActivo =
-        colaNew.length + colaListos.length + (procesoEjecucion ? 1 : 0) + colaBloqueados.length
+        colaNew.length +
+        colaListos.length +
+        (procesoEjecucion ? 1 : 0) +
+        colaBloqueados.length +
+        state.colaSuspendidos.length
       const finalizado = totalActivo === 0
 
       return {
@@ -301,7 +360,6 @@ function reducer(state, action) {
           {
             ...state.procesoEjecucion,
             tiempoEnBloqueado: 0,
-            tiempoServicio: state.procesoEjecucion.tt,
           },
         ],
       }
@@ -311,10 +369,14 @@ function reducer(state, action) {
       if (!state.procesoEjecucion) return state
       const p = state.procesoEjecucion
       const marcos = liberarMarcos(state.marcos, p.id)
-      const tiempoFinalizacion = state.tiempoGlobal + 1
-      const tiempoRetorno = tiempoFinalizacion - p.tiempoLlegada
+      const tiempoFinalizacion = state.tiempoGlobal
       const tiempoServicio = p.tt
+      const tiempoRetorno = tiempoFinalizacion - p.tiempoLlegada
       const tiempoEspera = tiempoRetorno - tiempoServicio
+      const tiempoRespuesta =
+        p.tiempoInicioEjecucion != null
+          ? p.tiempoInicioEjecucion - p.tiempoLlegada
+          : null
       return {
         ...state,
         procesoEjecucion: null,
@@ -329,8 +391,7 @@ function reducer(state, action) {
             tiempoRetorno,
             terminadoPorError: true,
             resultado: 'ERROR',
-            tiempoRespuesta:
-              (p.tiempoInicioEjecucion ?? state.tiempoGlobal) - p.tiempoLlegada,
+            tiempoRespuesta,
           },
         ],
       }
@@ -338,15 +399,55 @@ function reducer(state, action) {
 
     case 'NEW_PROCESS': {
       if (state.finalizado) return state
-      const nuevoId =
-        state.colaNew.length +
-        state.colaListos.length +
-        state.colaBloqueados.length +
-        state.procesosTerminados.length +
-        (state.procesoEjecucion ? 1 : 0) +
-        1
-      const nuevo = crearProceso(nuevoId)
+      const nuevo = crearProceso(siguienteId(state))
       return { ...state, colaNew: [...state.colaNew, nuevo] }
+    }
+
+    case 'SUSPEND': {
+      if (state.colaBloqueados.length === 0) return state
+      const [primero, ...resto] = state.colaBloqueados
+      const marcos = liberarMarcos(state.marcos, primero.id)
+      const snapshot = {
+        ...primero,
+        tablaPaginas: [],
+        suspendidoEn: state.tiempoGlobal,
+      }
+      const colaSuspendidos = [...state.colaSuspendidos, snapshot]
+      return {
+        ...state,
+        colaBloqueados: resto,
+        colaSuspendidos,
+        marcos,
+        pendienteExportSuspendidos: true,
+      }
+    }
+
+    case 'CLEAR_EXPORT_FLAG':
+      return { ...state, pendienteExportSuspendidos: false }
+
+    case 'RETURN': {
+      if (state.colaSuspendidos.length === 0) return state
+      const [primero, ...restoSus] = state.colaSuspendidos
+      if (marcosLibres(state.marcos) < primero.numPaginas) return state
+      const asignacion = asignarMarcos(state.marcos, primero)
+      if (!asignacion) return state
+      const regresa = {
+        ...primero,
+        tablaPaginas: asignacion.tablaPaginas,
+        tiempoEnBloqueado: 0,
+      }
+      return {
+        ...state,
+        colaSuspendidos: restoSus,
+        marcos: asignacion.marcos,
+        colaListos: [
+          ...state.colaListos,
+          {
+            ...regresa,
+            tiempoLlegada: regresa.tiempoLlegada ?? state.tiempoGlobal,
+          },
+        ],
+      }
     }
 
     case 'SHOW_BCP':
@@ -368,9 +469,15 @@ export default function Programa7() {
   const [state, dispatch] = useReducer(reducer, initialState)
   const {
     iniciado, finalizado, pausado, tiempoGlobal, quantum,
-    colaNew, colaListos, procesoEjecucion, colaBloqueados, procesosTerminados,
-    marcos, mostrarBCP, mostrarTablaPaginas,
+    colaNew, colaListos, procesoEjecucion, colaBloqueados, colaSuspendidos,
+    procesosTerminados, marcos, mostrarBCP, mostrarTablaPaginas,
   } = state
+
+  const libresCount = marcosLibres(marcos)
+  const proximoSuspendido = colaSuspendidos[0] ?? null
+  const marcosFaltanRegreso = proximoSuspendido
+    ? Math.max(0, proximoSuspendido.numPaginas - libresCount)
+    : 0
 
   // Reloj
   useEffect(() => {
@@ -378,6 +485,14 @@ export default function Programa7() {
     const id = setInterval(() => dispatch({ type: 'TICK' }), 1000)
     return () => clearInterval(id)
   }, [iniciado, pausado, finalizado])
+
+  // Exportar JSON al suspender (fuera del reducer; un solo archivo por acción S)
+  const pendienteExport = state.pendienteExportSuspendidos
+  useEffect(() => {
+    if (!pendienteExport || colaSuspendidos.length === 0) return
+    exportarSuspendidosJson(colaSuspendidos)
+    dispatch({ type: 'CLEAR_EXPORT_FLAG' })
+  }, [pendienteExport, colaSuspendidos])
 
   // Teclas
   useEffect(() => {
@@ -393,11 +508,13 @@ export default function Programa7() {
       switch (k) {
         case 'p': dispatch({ type: 'PAUSE' }); break
         case 'c': dispatch({ type: 'CONTINUE' }); break
-        case 'e': dispatch({ type: 'INTERRUPT' }); break
-        case 'w': dispatch({ type: 'ERROR' }); break
+        case 'i': dispatch({ type: 'INTERRUPT' }); break
+        case 'e': dispatch({ type: 'ERROR' }); break
         case 'n': dispatch({ type: 'NEW_PROCESS' }); break
         case 'b': dispatch({ type: 'SHOW_BCP' }); break
         case 't': dispatch({ type: 'SHOW_PAGINAS' }); break
+        case 's': dispatch({ type: 'SUSPEND' }); break
+        case 'r': dispatch({ type: 'RETURN' }); break
       }
     }
     window.addEventListener('keydown', onKey)
@@ -412,6 +529,7 @@ export default function Programa7() {
     const q = parseInt(inputQ)
     if (!q || q <= 0 || isNaN(q)) return
     const procesos = Array.from({ length: n }, (_, i) => crearProceso(i + 1))
+    ultimaFirmaExportSuspendidos = null
     dispatch({ type: 'INIT', procesos, quantum: q })
   }
 
@@ -444,6 +562,7 @@ export default function Programa7() {
       ...colaListos.map(p => ({ ...p, estado: 'LISTO' })),
       ...(procesoEjecucion ? [{ ...procesoEjecucion, estado: 'EJECUCION' }] : []),
       ...colaBloqueados.map(p => ({ ...p, estado: 'BLOQUEADO' })),
+      ...colaSuspendidos.map(p => ({ ...p, estado: 'SUSPENDIDO' })),
       ...procesosTerminados.map(p => ({ ...p, estado: 'TERMINADO' })),
     ]
     return (
@@ -474,7 +593,9 @@ export default function Programa7() {
                       ? (p.terminadoPorError ? 'TERMINADO (ERROR)' : 'TERMINADO')
                       : p.estado === 'BLOQUEADO'
                         ? `BLOQUEADO (${p.tiempoEnBloqueado}/${TIEMPO_BLOQUEO})`
-                        : p.estado}</td>
+                        : p.estado === 'SUSPENDIDO'
+                          ? 'SUSPENDIDO (disco)'
+                          : p.estado}</td>
                     <td>{p.operacion}</td>
                     <td className={p.terminadoPorError ? 'p7-text-error' : ''}>
                       {p.estado === 'TERMINADO' ? p.resultado : '—'}
@@ -482,10 +603,16 @@ export default function Programa7() {
                     <td>{p.tamano}</td>
                     <td>{p.numPaginas}</td>
                     <td>{p.tme}</td>
-                    <td>{p.estado !== 'NUEVO' ? p.tiempoLlegada : '—'}</td>
+                    <td>{p.estado !== 'NUEVO' && p.estado !== 'SUSPENDIDO' ? p.tiempoLlegada : '—'}</td>
                     <td>{p.tiempoFinalizacion ?? '—'}</td>
                     <td>{retorno}</td>
-                    <td>{p.tiempoEspera ?? '—'}</td>
+                    <td>
+                      {p.estado === 'TERMINADO'
+                        ? p.tiempoEspera
+                        : p.estado === 'LISTO' || p.estado === 'EJECUCION'
+                          ? (p.tiempoEspera ?? 0)
+                          : '—'}
+                    </td>
                     <td>{servicio}</td>
                     <td>{p.estado === 'TERMINADO' ? '—' : p.tme - servicio}</td>
                     <td>{p.tiempoRespuesta ?? '—'}</td>
@@ -534,6 +661,40 @@ export default function Programa7() {
             </div>
           ))}
         </div>
+        <div className="p7-paginas-bloq">
+          <h3>Procesos bloqueados (datos al momento)</h3>
+          {colaBloqueados.length === 0 ? (
+            <p className="p7-empty">No hay procesos bloqueados.</p>
+          ) : (
+            <table className="p7-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>T. bloqueado</th>
+                  <th>TME</th>
+                  <th>CPU (tt)</th>
+                  <th>Tamaño</th>
+                  <th>Páginas</th>
+                  <th>Operación</th>
+                </tr>
+              </thead>
+              <tbody>
+                {colaBloqueados.map(p => (
+                  <tr key={`blk-${p.id}`}>
+                    <td>P{p.id}</td>
+                    <td>{p.tiempoEnBloqueado}/{TIEMPO_BLOQUEO}</td>
+                    <td>{p.tme}</td>
+                    <td>{p.tt}</td>
+                    <td>{p.tamano}</td>
+                    <td>{p.numPaginas}</td>
+                    <td>{p.operacion}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
         <div className="p7-paginas-libres">
           <h3>Marcos libres ({libres.length})</h3>
           <p>{libres.length === 0 ? '— ninguno —' : libres.join(', ')}</p>
@@ -569,8 +730,24 @@ export default function Programa7() {
           </div>
           <div className="p7-header-item">
             <span className="p7-label">Marcos libres</span>
-            <span className="p7-value">{marcosLibres(marcos)}/{MARCOS_DISPONIBLES}</span>
+            <span className="p7-value">{libresCount}/{MARCOS_DISPONIBLES}</span>
           </div>
+          <div className="p7-header-item">
+            <span className="p7-label">Suspendidos</span>
+            <span className="p7-value">{colaSuspendidos.length}</span>
+          </div>
+          {proximoSuspendido && (
+            <div className="p7-header-item p7-header-wide">
+              <span className="p7-label">Próximo en regresar (R)</span>
+              <span className="p7-value p7-value-sm">
+                P{proximoSuspendido.id} · tam. {proximoSuspendido.tamano} ·
+                {proximoSuspendido.numPaginas} marcos
+                {marcosFaltanRegreso > 0
+                  ? ` · faltan ${marcosFaltanRegreso}`
+                  : ' · marcos OK'}
+              </span>
+            </div>
+          )}
         </div>
 
         <button className="p7-btn-init" onClick={inicializar}>
@@ -580,11 +757,13 @@ export default function Programa7() {
         <div className="p7-key-legend">
           <kbd>P</kbd><span>Pausa</span>
           <kbd>C</kbd><span>Continuar</span>
-          <kbd>E</kbd><span>E/S</span>
-          <kbd>W</kbd><span>Error</span>
+          <kbd>I</kbd><span>E/S</span>
+          <kbd>E</kbd><span>Error</span>
           <kbd>N</kbd><span>Nuevo</span>
           <kbd>B</kbd><span>BCP</span>
-          <kbd>T</kbd><span>Tabla Páginas</span>
+          <kbd>T</kbd><span>Páginas</span>
+          <kbd>S</kbd><span>Suspender</span>
+          <kbd>R</kbd><span>Regresar</span>
         </div>
       </header>
 
@@ -756,6 +935,22 @@ export default function Programa7() {
                     ))}
                 </tbody>
               </table>
+            </div>
+
+            <div className="p7-section p7-section-susp">
+              <h3>Suspendidos ({colaSuspendidos.length})</h3>
+              {proximoSuspendido ? (
+                <p className="p7-next-info">
+                  Próximo regreso: <strong>P{proximoSuspendido.id}</strong> &middot;
+                  Tamaño <strong>{proximoSuspendido.tamano}</strong> &middot;
+                  Necesita <strong>{proximoSuspendido.numPaginas}</strong> marcos
+                  {marcosFaltanRegreso > 0 && (
+                    <> &middot; faltan <strong>{marcosFaltanRegreso}</strong></>
+                  )}
+                </p>
+              ) : (
+                <p className="p7-empty">— ninguno —</p>
+              )}
             </div>
 
             <div className="p7-section">

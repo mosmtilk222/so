@@ -28,6 +28,8 @@ body {
 }
 .p7-header-group { display: flex; gap: 1.25rem; }
 .p7-header-item { display: flex; flex-direction: column; align-items: center; min-width: 80px; }
+.p7-header-wide { min-width: 200px; max-width: 280px; }
+.p7-value-sm { font-size: 0.72rem !important; line-height: 1.2; text-align: center; white-space: normal; }
 .p7-label { font-size: 0.65rem; color: #888; text-transform: uppercase; }
 .p7-value { font-size: 1.05rem; font-weight: bold; }
 .p7-estado.ejecutando { color: #4caf50; }
@@ -274,6 +276,17 @@ body {
   color: #aaa;
   margin-bottom: 0.5rem;
 }
+.p7-paginas-bloq {
+  background: #1a1a1a;
+  border: 1px solid #2e2e2e;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-top: 1rem;
+}
+.p7-paginas-bloq h3 { font-size: 0.9rem; margin-bottom: 0.5rem; }
+
+.p7-section-susp { border-color: #5c4d00; }
+
 .p7-paginas-libres {
   background: #1a1a1a;
   border: 1px solid #2e2e2e;
